@@ -1,0 +1,186 @@
+* Anthem Minimum Coverage Pathway X PPO
+** Script
+
+1. Is Dr. X here?
+   - *Yes* Continue
+   - *No* Do you have a number Dr. X could be contacted at?
+     - *Yes* Mark as =Mislisted Contact (phone #)=, restart with new number
+     - *No* Mark as =Mislisted Contact (unreachable)=
+2. Is Dr. X a primary care physician providing physicals?
+   - *Yes* Continue
+   - *No* Mark as =Mislisted Specialty=, Continue
+3. Does Dr. X accept *Anthem Blue Cross Minimum Coverage PPO, Covered California
+   Pathway X PPO* insurance?
+   - *Yes* Mark as =Accepts Insurance=, Continue
+   - *No* Mark as =Does Not Accept Insurance=, Stop
+4. Is Dr. X accepting new patients under this plan?
+   - *Yes* Mark as =Accepting Patients=, Continue
+   - *No* Mark as =Not Accepting Patients=, Stop
+5. Check next three available appointment times.
+
+** Analysis
+
+*** Prelude
+
+Import the data analysis packages, and define =dataframe_to_table= for
+converting pandas dataframes to a table-like list of lists.
+
+#+BEGIN_SRC python 
+  import numpy as np
+  import pandas as pd
+
+  def dataframe_to_table(frame):
+      """
+      Convert the dataframe to a friendly list of lists.
+      """
+      frame_dict = frame.to_dict()
+      fields = frame_dict.keys()
+      cols = []
+      for field in fields:
+          cols.append(frame_dict[field].values())
+      return [fields] + zip(*cols)
+
+#+END_SRC
+
+#+RESULTS:
+
+Import the raw data.
+
+#+BEGIN_SRC python
+  # Load the raw data
+  raw = pd.DataFrame.from_csv('data/anthem_raw.csv', index_col=False)
+
+  raw[['Doctor', 'Zipcode', 'Phone']][:5]
+#+END_SRC
+
+#+RESULTS:
+:                  Doctor  Zipcode           Phone
+: 0     \nAMY TREWELLA MD    92070    760.789.5160
+: 1       \nAYLIN ULKU MD    94850    415.476.1000
+: 2  \nBETH SCHWEITZER MD    94043    510.615.4870
+: 3      \nCHADI OBEID MD    91376    818.365.1194
+: 4       \nIRAJ AZIZI MD    90272  310.274.9500\n
+: 
+: [5 rows x 3 columns]
+
+*** Cleaning the List
+
+Steps taken to clean the data:
+
+1. Strip spaces and newlines from relevant fields.
+2. Remove records where no doctors were returned for a zip-code.
+3. Remove records where the doctor couldn't be contacted, e.g. due
+   to the office being closed.
+
+To be clear, we don't penalize Anthem if we're uncertain why we couldn't contact
+a doctor for a particular phone number; instead we drop the record.
+
+#+BEGIN_SRC python
+  # The `docs` variable will be a dataframe cleaned to only contain entries
+  # with a doctor who was contacted.
+  docs = raw.copy()
+
+  # Remove uncontacted physicians: `Contacted? == NaN`
+  docs = docs[docs['Contacted?'].isnull()]
+
+  # Remove entries where a doctor couldn't be found for the zip code
+  docs = docs[docs['Doctor'].notnull()]
+  docs = docs[docs['Phone'].notnull()]
+
+  # Remove repeated physicians
+  docs.drop_duplicates('Doctor', inplace=True)
+
+  # Strip newlines from the doctor names, and phone numbers
+  docs['Doctor'] = docs['Doctor'].apply(lambda x: x.strip())
+
+  def clean_boolean(value):
+      """Cast booleans: "y ..." == True, "n ..." == False, NaN == NaN."""
+      try:
+          if value.startswith("y"):
+              return True
+          elif value.startswith("n"):
+              return False
+      except AttributeError:
+          if value != value:
+              return value
+          else:
+              raise
+
+  docs['Contact Correct?'] = docs['Contact Correct?'].apply(clean_boolean)
+  docs['Specialty Correct?'] = docs['Specialty Correct?'].apply(clean_boolean)
+  docs['Insurance Correct?'] = docs['Insurance Correct?'].apply(clean_boolean)
+  docs['New Patients?'] = docs['New Patients?'].apply(clean_boolean)
+
+  docs.Doctor[:5]
+#+END_SRC
+
+#+RESULTS:
+: 0     AMY TREWELLA MD
+: 1       AYLIN ULKU MD
+: 3      CHADI OBEID MD
+: 4       IRAJ AZIZI MD
+: 6    JOSEPH ARDITO MD
+: Name: Doctor, dtype: object
+
+**** Unable to Contact
+
+11 physicians who couldn't be contacted were removed. Typical reasons include
+the number reaching an answering machine or further follow-up required.
+
+#+BEGIN_SRC python
+  len(raw[raw['Contacted?'].notnull()])
+#+END_SRC
+
+#+RESULTS:
+: 11
+
+
+**** No Listed Physicians for Zip Code
+
+16 zipcodes had had no listed physicians. These records were removed.
+
+#+BEGIN_SRC python
+  len(raw[raw['Phone'].isnull()])
+#+END_SRC
+
+#+RESULTS:
+: 16
+
+**** Duplicated Physicians
+
+Our method led to repeated physicians (see discussion). Repeated records
+were removed.
+
+*TODO!* Removing a True repeat might be lowering the final count. DOUBLE CHECK
+
+*** Results
+
+**** Number of Physicians Considered
+
+After cleaning the data to remove bad records, we calculated the number of valid
+phsyicians. A valid physician is one who had valid contact information, and was
+a primary care physician accepting new patients.
+
+#+BEGIN_SRC python
+  def iter_valid(docs, fields=['Contact Correct?',
+                               'Specialty Correct?',
+                               'Insurance Correct?',
+                               'New Patients?']):
+      """
+      Yield physicians for which the specified fields are True.
+      """
+      for _, doc in docs.iterrows():
+          if all(doc[field] is True for field in fields):
+              yield doc
+
+  valid_docs = list(iter_valid(docs))
+
+  [['Valid', len(valid_docs)],
+   ['Total', len(docs)],
+   ['Percent', float(len(valid_docs)) / float(len(docs))]]
+#+END_SRC
+
+#+RESULTS:
+| Total   |                 39 |
+| Valid   |                  7 |
+| Percent | 0.1794871794871795 |
